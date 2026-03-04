@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -18,3 +19,9 @@ jobs:
 
       - name: Build
         run: make build-all
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: picoclaw-binaries
+          path: build/
