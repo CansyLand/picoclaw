@@ -17,6 +17,8 @@ LDFLAGS=-ldflags "-X $(INTERNAL).version=$(VERSION) -X $(INTERNAL).gitCommit=$(G
 # Go variables
 GO?=CGO_ENABLED=0 go
 GOFLAGS?=-v -tags stdjson
+# Limit parallel builds (e.g. GOPARALLEL=3 on low-memory Pi to avoid OOM)
+GOPARALLEL?=
 
 # Golangci-lint
 GOLANGCI_LINT?=golangci-lint
@@ -78,10 +80,11 @@ generate:
 	@echo "Run generate complete"
 
 ## build: Build the picoclaw binary for current platform
+##   Use GOPARALLEL=3 for low-memory systems (e.g. Raspberry Pi) to avoid OOM
 build: generate
 	@echo "Building $(BINARY_NAME) for $(PLATFORM)/$(ARCH)..."
 	@mkdir -p $(BUILD_DIR)
-	@$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_PATH) ./$(CMD_DIR)
+	@$(GO) build $(if $(GOPARALLEL),-p $(GOPARALLEL),) $(GOFLAGS) $(LDFLAGS) -o $(BINARY_PATH) ./$(CMD_DIR)
 	@echo "Build complete: $(BINARY_PATH)"
 	@ln -sf $(BINARY_NAME)-$(PLATFORM)-$(ARCH) $(BUILD_DIR)/$(BINARY_NAME)
 

@@ -516,15 +516,25 @@ func (al *AgentLoop) runLLMIteration(
 		var response *providers.LLMResponse
 		var err error
 
+		llmOpts := map[string]any{
+			"max_tokens":       agent.MaxTokens,
+			"temperature":      agent.Temperature,
+			"prompt_cache_key": agent.ID,
+			"on_stream_progress": func() {
+				logger.InfoCF("agent", "LLM API responding (streaming data received)",
+					map[string]any{"agent_id": agent.ID, "iteration": iteration})
+			},
+		}
+
 		callLLM := func() (*providers.LLMResponse, error) {
 			if len(agent.Candidates) > 1 && al.fallback != nil {
 				fbResult, fbErr := al.fallback.Execute(ctx, agent.Candidates,
 					func(ctx context.Context, provider, model string) (*providers.LLMResponse, error) {
-						return agent.Provider.Chat(ctx, messages, providerToolDefs, model, map[string]any{
-							"max_tokens":       agent.MaxTokens,
-							"temperature":      agent.Temperature,
-							"prompt_cache_key": agent.ID,
-						})
+						opts := make(map[string]any)
+						for k, v := range llmOpts {
+							opts[k] = v
+						}
+						return agent.Provider.Chat(ctx, messages, providerToolDefs, model, opts)
 					},
 				)
 				if fbErr != nil {
@@ -537,11 +547,7 @@ func (al *AgentLoop) runLLMIteration(
 				}
 				return fbResult.Response, nil
 			}
-			return agent.Provider.Chat(ctx, messages, providerToolDefs, agent.Model, map[string]any{
-				"max_tokens":       agent.MaxTokens,
-				"temperature":      agent.Temperature,
-				"prompt_cache_key": agent.ID,
-			})
+			return agent.Provider.Chat(ctx, messages, providerToolDefs, agent.Model, llmOpts)
 		}
 
 		// Retry loop for context/token errors

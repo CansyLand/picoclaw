@@ -1,6 +1,7 @@
 package openai_compat
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,8 +11,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
@@ -119,6 +122,10 @@ func (p *Provider) Chat(
 		requestBody["prompt_cache_key"] = cacheKey
 	}
 
+	// Use streaming to receive thinking tokens and content incrementally.
+	// When the first delta arrives, picoclaw knows the API is responding (not ghosting).
+	requestBody["stream"] = true
+
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -140,15 +147,21 @@ func (p *Provider) Chat(
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed:\n  Status: %d\n  Body:   %s", resp.StatusCode, string(body))
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "text/event-stream") {
+		return p.parseStreamingResponse(ctx, resp.Body, options)
+	}
+
+	// Fallback: API ignored stream=true and returned JSON
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API request failed:\n  Status: %d\n  Body:   %s", resp.StatusCode, string(body))
-	}
-
 	return parseResponse(body)
 }
 
@@ -235,6 +248,150 @@ func parseResponse(body []byte) (*LLMResponse, error) {
 		ToolCalls:        toolCalls,
 		FinishReason:     choice.FinishReason,
 		Usage:            apiResponse.Usage,
+	}, nil
+}
+
+// streamingChunk represents one SSE chunk (OpenAI/PrivatAI format).
+type streamingChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content    string `json:"content"`
+			Thinking   string `json:"thinking"`
+			ToolCalls  []struct {
+				Index    int `json:"index"`
+				ID       string `json:"id"`
+				Function *struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls,omitempty"`
+		} `json:"delta"`
+		FinishReason string     `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *UsageInfo `json:"usage"`
+}
+
+type streamingToolCall struct {
+	ToolCall
+	rawArgs string
+}
+
+func (p *Provider) parseStreamingResponse(ctx context.Context, body io.Reader, options map[string]any) (*LLMResponse, error) {
+	var content, reasoningContent strings.Builder
+	toolCallsByIndex := make(map[int]*streamingToolCall)
+	var finishReason string
+	var usage *UsageInfo
+	progressOnce := &sync.Once{}
+
+	onProgress := func() {
+		progressOnce.Do(func() {
+			if cb, ok := options["on_stream_progress"].(func()); ok && cb != nil {
+				cb()
+			}
+		})
+	}
+
+	scanner := bufio.NewScanner(body)
+	// SSE events can be larger than default 64KB
+	const maxLineSize = 512 * 1024
+	scanner.Buffer(make([]byte, 0, maxLineSize), maxLineSize)
+
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk streamingChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue // skip malformed chunks
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		c := chunk.Choices[0]
+
+		if c.Delta.Thinking != "" {
+			reasoningContent.WriteString(c.Delta.Thinking)
+			onProgress()
+		}
+		if c.Delta.Content != "" {
+			content.WriteString(c.Delta.Content)
+			onProgress()
+		}
+
+		for _, tc := range c.Delta.ToolCalls {
+			if tc.Index < 0 {
+				continue
+			}
+			onProgress()
+			entry, ok := toolCallsByIndex[tc.Index]
+			if !ok {
+				entry = &streamingToolCall{ToolCall: ToolCall{ID: tc.ID}}
+				if tc.Function != nil {
+					entry.Name = tc.Function.Name
+				}
+				toolCallsByIndex[tc.Index] = entry
+			}
+			if tc.Function != nil && tc.Function.Arguments != "" {
+				entry.rawArgs += tc.Function.Arguments
+			}
+		}
+
+		if c.FinishReason != "" {
+			finishReason = c.FinishReason
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("stream read error: %w", err)
+	}
+
+	// Build final tool calls in index order
+	toolCalls := make([]ToolCall, 0, len(toolCallsByIndex))
+	for i := 0; i < len(toolCallsByIndex); i++ {
+		if stc, ok := toolCallsByIndex[i]; ok {
+			args := make(map[string]any)
+			if stc.rawArgs != "" {
+				if err := json.Unmarshal([]byte(stc.rawArgs), &args); err != nil {
+					args["raw"] = stc.rawArgs
+				}
+			}
+			toolCalls = append(toolCalls, ToolCall{
+				ID:        stc.ID,
+				Name:      stc.Name,
+				Arguments: args,
+			})
+		}
+	}
+
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+
+	logger.DebugCF("openai_compat", "Streaming response complete",
+		map[string]any{
+			"content_len": content.Len(),
+			"reasoning_len": reasoningContent.Len(),
+			"tool_calls": len(toolCalls),
+		})
+
+	return &LLMResponse{
+		Content:          content.String(),
+		ReasoningContent: reasoningContent.String(),
+		ToolCalls:        toolCalls,
+		FinishReason:     finishReason,
+		Usage:            usage,
 	}, nil
 }
 

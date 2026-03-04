@@ -2,6 +2,7 @@ package openai_compat
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -155,6 +156,46 @@ func TestProviderChat_HTTPError(t *testing.T) {
 	_, err := p.Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "gpt-4o", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestProviderChat_StreamingThinkingTokens(t *testing.T) {
+	progressCalled := false
+	progressFn := func() { progressCalled = true }
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if reqBody["stream"] != true {
+			t.Errorf("expected stream: true in request, got %v", reqBody["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		// PrivatAI-style SSE: thinking first, then content
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"thinking\":\"Let me analyze...\"}}]}\n")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"thinking\":\" the question.\"}}]}\n")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"The answer is 42.\"}}]}\n")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":10,\"total_tokens\":15}}\n")
+		fmt.Fprintf(w, "data: [DONE]\n")
+	}))
+	defer server.Close()
+
+	p := NewProvider("key", server.URL, "")
+	out, err := p.Chat(t.Context(), []Message{{Role: "user", Content: "What is 6*7?"}}, nil, "gpt-4o",
+		map[string]any{"on_stream_progress": progressFn})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !progressCalled {
+		t.Fatal("on_stream_progress callback was never called")
+	}
+	if out.ReasoningContent != "Let me analyze... the question." {
+		t.Fatalf("ReasoningContent = %q, want %q", out.ReasoningContent, "Let me analyze... the question.")
+	}
+	if out.Content != "The answer is 42." {
+		t.Fatalf("Content = %q, want %q", out.Content, "The answer is 42.")
 	}
 }
 
