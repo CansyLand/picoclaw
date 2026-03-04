@@ -24,6 +24,8 @@ type AgentInstance struct {
 	MaxTokens      int
 	Temperature    float64
 	ContextWindow  int
+	SummarizeAfterMessages int // 0 = use default 120
+	SummarizeAtPercent     int // 0 = use default 95
 	Provider       providers.LLMProvider
 	Sessions       *session.SessionManager
 	ContextBuilder *ContextBuilder
@@ -87,6 +89,15 @@ func NewAgentInstance(
 		temperature = *defaults.Temperature
 	}
 
+	summarizeAfter := defaults.SummarizeAfterMessages
+	if summarizeAfter == 0 {
+		summarizeAfter = 120
+	}
+	summarizeAtPercent := defaults.SummarizeAtPercent
+	if summarizeAtPercent == 0 {
+		summarizeAtPercent = 95
+	}
+
 	// Resolve fallback candidates
 	modelCfg := providers.ModelConfig{
 		Primary:   model,
@@ -95,16 +106,18 @@ func NewAgentInstance(
 	candidates := providers.ResolveCandidates(modelCfg, defaults.Provider)
 
 	return &AgentInstance{
-		ID:             agentID,
-		Name:           agentName,
-		Model:          model,
-		Fallbacks:      fallbacks,
-		Workspace:      workspace,
-		MaxIterations:  maxIter,
-		MaxTokens:      maxTokens,
-		Temperature:    temperature,
-		ContextWindow:  maxTokens,
-		Provider:       provider,
+		ID:                      agentID,
+		Name:                    agentName,
+		Model:                   model,
+		Fallbacks:               fallbacks,
+		Workspace:                workspace,
+		MaxIterations:            maxIter,
+		MaxTokens:                maxTokens,
+		Temperature:              temperature,
+		ContextWindow:            maxTokens,
+		SummarizeAfterMessages:   summarizeAfter,
+		SummarizeAtPercent:       summarizeAtPercent,
+		Provider:                 provider,
 		Sessions:       sessionsManager,
 		ContextBuilder: contextBuilder,
 		Tools:          toolsRegistry,

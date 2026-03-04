@@ -178,6 +178,10 @@ type AgentDefaults struct {
 	MaxTokens           int      `json:"max_tokens"                      env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOKENS"`
 	Temperature         *float64 `json:"temperature,omitempty"           env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
 	MaxToolIterations   int      `json:"max_tool_iterations"             env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
+	// SummarizeAfterMessages: trigger summarization when session has more than this many messages (0 = default 120).
+	SummarizeAfterMessages int `json:"summarize_after_messages,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_AFTER_MESSAGES"`
+	// SummarizeAtPercent: trigger summarization when estimated history tokens exceed this percent of context window (0 = default 95).
+	SummarizeAtPercent int `json:"summarize_at_percent,omitempty"          env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_AT_PERCENT"`
 }
 
 // GetModelName returns the effective model name for the agent defaults.

@@ -752,9 +752,17 @@ func (al *AgentLoop) updateToolContexts(agent *AgentInstance, channel, chatID st
 func (al *AgentLoop) maybeSummarize(agent *AgentInstance, sessionKey, channel, chatID string) {
 	newHistory := agent.Sessions.GetHistory(sessionKey)
 	tokenEstimate := al.estimateTokens(newHistory)
-	threshold := agent.ContextWindow * 75 / 100
+	percent := agent.SummarizeAtPercent
+	if percent == 0 {
+		percent = 95
+	}
+	threshold := agent.ContextWindow * percent / 100
+	afterMessages := agent.SummarizeAfterMessages
+	if afterMessages == 0 {
+		afterMessages = 120
+	}
 
-	if len(newHistory) > 20 || tokenEstimate > threshold {
+	if len(newHistory) > afterMessages || tokenEstimate > threshold {
 		summarizeKey := agent.ID + ":" + sessionKey
 		if _, loading := al.summarizing.LoadOrStore(summarizeKey, true); !loading {
 			go func() {
