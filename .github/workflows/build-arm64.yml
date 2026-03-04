@@ -28,3 +28,26 @@ jobs:
         with:
           name: picoclaw-linux-arm64
           path: build/picoclaw-linux-arm64
+
+      - name: Remove old arm64-latest release (for update)
+        run: |
+          RELEASE_ID=$(curl -sS -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/tags/arm64-latest" | jq -r '.id // empty')
+          if [ -n "$RELEASE_ID" ]; then
+            curl -sS -X DELETE -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
+            curl -sS -X DELETE -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/arm64-latest"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to release (public download, no login)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: arm64-latest
+          name: Raspberry Pi build (arm64)
+          body: "Latest arm64 build for Raspberry Pi. Download with: curl -sL https://github.com/CansyLand/picoclaw/releases/download/arm64-latest/picoclaw-linux-arm64 -o picoclaw-linux-arm64"
+          files: build/picoclaw-linux-arm64
+          draft: false
+          prerelease: false
+          replace_existing_assets: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
